@@ -1,50 +1,48 @@
 package pt.paradigmshift.babel.zigbee.notifications;
 
-import com.zsmartsystems.zigbee.IeeeAddress;
-import pt.unl.fct.di.novasys.babel.generic.ProtoNotification;
+import pt.paradigmshift.babel.radio.notifications.RadioPacketReceivedNotification;
+import pt.paradigmshift.babel.zigbee.ZigBeeAddress;
 
 /**
- * Delivered to every protocol that subscribes to it, for every ZigBee data
- * packet received by the coordinator. Subscribers are expected to filter on
- * {@link #getSourceProto()} to keep only the traffic addressed to their
- * protocol — by convention the remote sender stamps its own
- * {@code PROTOCOL_ID} there.
+ * Specialisation of
+ * {@link RadioPacketReceivedNotification} carrying the ZigBee-specific
+ * {@code id} and {@code val} fields from the {@code ubabel_zb_packet_t}
+ * wire format. These are application-level metadata used by end-device
+ * firmware for demultiplexing; the Babel protocol layer does not interpret
+ * them and surfaces them verbatim.
  *
- * <p>The {@code id} and {@code val} fields are application-level metadata
- * carried by the underlying {@code ZigBeePacket}; the Babel protocol layer
- * does not interpret them and surfaces them verbatim for end-device
- * demultiplexing.
+ * <p>Shares
+ * {@link RadioPacketReceivedNotification#NOTIFICATION_ID} with the base —
+ * subscribers of the base ID receive this subclass too. Cast at the handler
+ * if you need the ZigBee extras:
+ *
+ * <pre>{@code
+ * if (n instanceof ZigBeePacketReceivedNotification zb) {
+ *     int id  = zb.getPacketId();
+ *     int val = zb.getVal();
+ * }
+ * }</pre>
  */
-public class ZigBeePacketReceivedNotification extends ProtoNotification {
+public class ZigBeePacketReceivedNotification
+        extends RadioPacketReceivedNotification {
 
-    public static final short NOTIFICATION_ID = 1200;
-
-    private final short sourceProto;
-    private final IeeeAddress origin;
-    private final int id;
+    private final int packetId;
     private final int val;
-    private final byte[] payload;
 
     public ZigBeePacketReceivedNotification(short sourceProto,
-                                            IeeeAddress origin,
-                                            int id,
+                                            ZigBeeAddress origin,
+                                            int packetId,
                                             int val,
                                             byte[] payload) {
-        super(NOTIFICATION_ID);
-        this.sourceProto = sourceProto;
-        this.origin = origin;
-        this.id = id & 0xFFFF;
+        super(sourceProto, origin, payload);
+        this.packetId = packetId & 0xFFFF;
         this.val = val & 0xFFFF;
-        this.payload = payload;
     }
 
-    public short getSourceProto() { return sourceProto; }
-
-    public IeeeAddress getOrigin() { return origin; }
-
-    public int getPacketId() { return id; }
+    public int getPacketId() { return packetId; }
 
     public int getVal() { return val; }
 
-    public byte[] getPayload() { return payload; }
+    /** Convenience accessor: {@link #getOrigin()} cast to {@link ZigBeeAddress}. */
+    public ZigBeeAddress getZigBeeOrigin() { return (ZigBeeAddress) getOrigin(); }
 }

@@ -7,9 +7,15 @@ gateway can share a single Ember EZSP USB dongle.
 
 **Group ID:** `pt.paradigmshift.babel`
 **Artifact ID:** `babel-zigbee-protocol`
-**Current version:** `0.1.0`
-**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.0.1` driver and
+**Current version:** `0.2.0`
+**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.1.0` driver,
+`pt.paradigmshift.babel:babel-radio-api:0.1.0`, and
 `pt.paradigmshift.babel:babel-core:1.0.0`.
+
+> **0.2.0 is a breaking release.** The request and send-failure notification
+> types moved to the shared `babel-radio-api` library, the destination type
+> changed from `IeeeAddress` to `ZigBeeAddress` (a `RadioAddress` subclass),
+> and NWK-layer broadcast is now supported. See *Migration* below.
 
 ---
 
@@ -30,12 +36,17 @@ fields are not touched, so end-device firmware that uses them for
 application-level demultiplexing keeps working unchanged.
 
 Inbound packets are delivered to every protocol that subscribed to
-`ZigBeePacketReceivedNotification`; each one filters by its own `PROTOCOL_ID`:
+`RadioPacketReceivedNotification`; each one filters by its own `PROTOCOL_ID`.
+The ZigBee protocol emits a subclass — `ZigBeePacketReceivedNotification` —
+carrying the µBabel `id` and `val` fields. Generic subscribers see only
+the base type; ZigBee-aware subscribers cast to the subclass:
 
 ```java
-subscribeNotification(ZigBeePacketReceivedNotification.NOTIFICATION_ID, (n, src) -> {
+subscribeNotification(RadioPacketReceivedNotification.NOTIFICATION_ID, (n, src) -> {
     if (n.getSourceProto() != MY_PROTOCOL_ID) return;
-    handlePeerMessage(n.getOrigin(), n.getPayload());
+    if (n instanceof ZigBeePacketReceivedNotification zb) {
+        handlePeerMessage(zb.getZigBeeOrigin(), zb.getPacketId(), zb.getPayload());
+    }
 });
 ```
 
@@ -48,33 +59,42 @@ notifications). The naming mirrors `BabelMessage.getSourceProto()`.
 
 ## Request / notification surface
 
-| Type | ID | Purpose |
-|---|---|---|
-| `SendZigBeePacketRequest`         | `1200` (request)      | Unicast a payload to a specific IEEE address |
-| `ZigBeePacketReceivedNotification`| `1200` (notification) | One per received data packet — fan-out to every subscriber |
-| `ZigBeeHeartbeatNotification`     | `1201` (notification) | One per heartbeat write from an end device — unconditional fan-out (no `sourceProto` filter) |
-| `ZigBeeSendFailedNotification`    | `1202` (notification) | Synchronous send failure (MTU exceeded, unknown destination, driver throw) |
+The request and shared-notification types live in **`babel-radio-api`** and
+are shared with every other radio Babel protocol. The protocol-specific bit
+is the `ZigBeeAddress` (an extension of `RadioAddress` wrapping an
+`IeeeAddress`), the `ZigBeePacketReceivedNotification` subclass adding the
+µBabel `id`/`val` fields, and the ZigBee-only heartbeat notification.
 
-The protocol itself registers as id `1200`.
+| Type | Origin | ID | Purpose |
+|---|---|---|---|
+| `SendRadioPacketRequest`          | `babel-radio-api`           | `100` (request)      | Unicast a payload — `destination` is a `ZigBeeAddress` |
+| `BroadcastRadioPacketRequest`     | `babel-radio-api`           | `101` (request)      | NWK-layer broadcast (defaults to `BROADCAST_ALL_DEVICES`) |
+| `RadioPacketReceivedNotification` | `babel-radio-api`           | `100` (notification) | Generic inbound packet — emitted as `ZigBeePacketReceivedNotification` (subclass) carrying `id`/`val` |
+| `RadioSendFailedNotification`     | `babel-radio-api`           | `101` (notification) | MTU exceeded, wrong-radio destination, or driver throw |
+| `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | `1201` (notification)| µBabel heartbeat attribute write — unconditional fan-out, no `sourceProto` filter. No LoRa analogue. |
+| `ZigBeeAddress`                   | `babel-zigbee-protocol`     | —                    | IEEE EUI-64 ZigBee address; `RadioAddress` subclass |
+
+The protocol itself registers as id `1200`. Routing from generic
+application code is one call: `addr.owningProtocolId()` returns `1200` for
+any `ZigBeeAddress`.
 
 `MAX_USER_PAYLOAD_BYTES = 114` (= 116 B driver payload limit − 2 B
 `sourceProto` envelope). Requests with a larger payload trigger
-`ZigBeeSendFailedNotification`.
+`RadioSendFailedNotification`.
 
 ### What is *not* exposed
 
-- **No broadcast request.** The underlying driver only supports unicast
-  `transmit(IeeeAddress, ZigBeePacket)`. ZigBee NWK-layer broadcast addresses
-  (`0xFFFD/E/F`) would need driver support and are not surfaced here. Sending
-  the same payload to every known device is a one-line loop at the caller
-  site if you really need it, but the resulting semantics are not equivalent
-  to a true NWK broadcast.
+- **Only the default broadcast scope.** `BroadcastRadioPacketRequest` sends
+  via `ZigBeeBroadcastDestination.BROADCAST_ALL_DEVICES`. Targeting
+  `BROADCAST_RX_ON` / `BROADCAST_ROUTERS_AND_COORD` / etc. requires using
+  the driver directly. ZigBee broadcasts also do not deliver to sleepy end
+  devices that are not currently awake.
 - **No async delivery confirmation.** The driver returns
-  `Future<CommandResult>` from `transmit(...)`, but this protocol does not
-  await it (blocking the Babel handler thread would defeat Babel's threading
-  model). `ZigBeeSendFailedNotification` therefore covers synchronous
-  failures only. End-to-end acknowledgement is the application's job —
-  typically via an inbound reply from the end device.
+  `Future<CommandResult>` from unicast and `boolean` from broadcast, but this
+  protocol does not await/observe them (blocking the Babel handler thread
+  would defeat Babel's threading model). `RadioSendFailedNotification`
+  therefore covers synchronous failures only. End-to-end acknowledgement is
+  the application's job — typically via an inbound reply from the end device.
 
 ---
 
@@ -95,13 +115,14 @@ Add to your `pom.xml`:
     <dependency>
         <groupId>pt.paradigmshift.babel</groupId>
         <artifactId>babel-zigbee-protocol</artifactId>
-        <version>0.1.0</version>
+        <version>0.2.0</version>
     </dependency>
 </dependencies>
 ```
 
-This artifact pulls in `pt.paradigmshift.iot:babel-zigbee` (the driver) and
-`pt.paradigmshift.babel:babel-core` transitively.
+This artifact pulls in `pt.paradigmshift.iot:babel-zigbee` (the driver),
+`pt.paradigmshift.babel:babel-radio-api` (the shared request/notification
+types), and `pt.paradigmshift.babel:babel-core` transitively.
 
 ### Wiring it up in `Main`
 
@@ -129,17 +150,18 @@ babel.start();
 
 ### Sending from another protocol
 
-> **Destination must be a joined device.** Each `SendZigBeePacketRequest` is
-> ultimately fulfilled through the driver's
-> `ZigBeeCoordinator.transmit(IeeeAddress, ZigBeePacket)`, which requires the
-> destination to be present in `coordinator.getKnownDevices()` (i.e. the
-> device has joined and its µBabel endpoint has been registered). If the
+> **Unicast destinations must be a joined device.** Each unicast
+> `SendRadioPacketRequest` is ultimately fulfilled through the driver's
+> `ZigBeeCoordinator.transmit(IeeeAddress, ZigBeePacket)`, which requires
+> the destination to be present in `coordinator.getKnownDevices()`. If the
 > destination is unknown — or its endpoint / cluster is missing — the
 > protocol catches the driver's `IllegalStateException` and emits a
-> `ZigBeeSendFailedNotification` rather than transmitting. Configuring a
+> `RadioSendFailedNotification` rather than transmitting. Configuring a
 > target before the device has joined is therefore safe (subsequent sends
 > succeed automatically once the device appears), but the first few tries
-> will fail until that happens.
+> will fail until that happens. Broadcasts via
+> `BroadcastRadioPacketRequest` have no such requirement — they go straight
+> to the NCP.
 
 ```java
 public class MyControlProtocol extends GenericProtocol {
@@ -147,19 +169,27 @@ public class MyControlProtocol extends GenericProtocol {
 
     public MyControlProtocol() throws HandlerRegistrationException {
         super("MyControl", PROTOCOL_ID);
-        subscribeNotification(ZigBeePacketReceivedNotification.NOTIFICATION_ID, this::onZigBeeIn);
-        subscribeNotification(ZigBeeHeartbeatNotification.NOTIFICATION_ID,      this::onHeartbeat);
-        subscribeNotification(ZigBeeSendFailedNotification.NOTIFICATION_ID,     this::onZigBeeFail);
+        subscribeNotification(RadioPacketReceivedNotification.NOTIFICATION_ID, this::onRadioIn);
+        subscribeNotification(ZigBeeHeartbeatNotification.NOTIFICATION_ID,     this::onHeartbeat);
+        subscribeNotification(RadioSendFailedNotification.NOTIFICATION_ID,     this::onRadioFail);
     }
 
-    private void command(IeeeAddress device, byte[] payload) {
-        sendRequest(new SendZigBeePacketRequest(PROTOCOL_ID, device, payload),
+    private void command(ZigBeeAddress device, byte[] payload) {
+        // Radio-agnostic routing: the address knows which protocol owns it.
+        sendRequest(new SendRadioPacketRequest(PROTOCOL_ID, device, payload),
+                    device.owningProtocolId());
+    }
+
+    private void announce(byte[] payload) {
+        sendRequest(new BroadcastRadioPacketRequest(PROTOCOL_ID, payload),
                     ZigBeeProtocol.PROTOCOL_ID);
     }
 
-    private void onZigBeeIn(ZigBeePacketReceivedNotification n, short src) {
-        if (n.getSourceProto() != PROTOCOL_ID) return;   // not for us
-        handleDeviceMessage(n.getOrigin(), n.getPayload());
+    private void onRadioIn(RadioPacketReceivedNotification n, short src) {
+        if (n.getSourceProto() != PROTOCOL_ID) return;            // not for us
+        if (src != ZigBeeProtocol.PROTOCOL_ID) return;            // not ZigBee
+        ZigBeePacketReceivedNotification zb = (ZigBeePacketReceivedNotification) n;
+        handleDeviceMessage(zb.getZigBeeOrigin(), zb.getPacketId(), zb.getPayload());
     }
 
     private void onHeartbeat(ZigBeeHeartbeatNotification n, short src) {
@@ -167,9 +197,9 @@ public class MyControlProtocol extends GenericProtocol {
         liveness.put(n.getOrigin(), n.getCounter());
     }
 
-    private void onZigBeeFail(ZigBeeSendFailedNotification n, short src) {
+    private void onRadioFail(RadioSendFailedNotification n, short src) {
         if (n.getSourceProto() != PROTOCOL_ID) return;
-        logger.warn("ZigBee send failed to {}: {}", n.getDestination(), n.getReason());
+        logger.warn("Radio send failed to {}: {}", n.getDestination(), n.getReason());
     }
 }
 ```
@@ -177,6 +207,16 @@ public class MyControlProtocol extends GenericProtocol {
 Two unrelated protocols can coexist with no further coordination — they stamp
 their own `PROTOCOL_ID` as `sourceProto` on every send, filter on
 `n.getSourceProto()` in their handlers, and ignore the rest.
+
+### Migration from 0.1.0
+
+| 0.1.0 type | 0.2.0 replacement |
+|---|---|
+| `SendZigBeePacketRequest(sp, IeeeAddress dest, payload)` | `SendRadioPacketRequest(sp, new ZigBeeAddress(dest), payload)` |
+| (no broadcast existed) | `BroadcastRadioPacketRequest(sp, payload)` — now supported via the driver's NWK-broadcast path |
+| `ZigBeePacketReceivedNotification` | still exists, but now `extends RadioPacketReceivedNotification`; subscribe to `RadioPacketReceivedNotification.NOTIFICATION_ID` and `instanceof`-cast to access `id`/`val`. `getOrigin()` now returns `RadioAddress` — use `getZigBeeOrigin()` for the typed accessor. |
+| `ZigBeeSendFailedNotification` | `RadioSendFailedNotification`; destination is a `RadioAddress` (cast to `ZigBeeAddress` if you need the IEEE). |
+| `ZigBeeHeartbeatNotification` | unchanged in shape but `getOrigin()` now returns `ZigBeeAddress` instead of `IeeeAddress` (call `.getIeeeAddress()` on it for the raw EUI). |
 
 ---
 
@@ -212,8 +252,8 @@ Push a version tag — CI deploys automatically (mirroring the other
 ParadigmShift Maven libs):
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.0
+git push origin v0.2.0
 ```
 
 ---
