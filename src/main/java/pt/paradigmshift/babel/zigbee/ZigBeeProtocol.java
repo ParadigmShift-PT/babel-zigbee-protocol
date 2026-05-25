@@ -66,6 +66,15 @@ import java.util.Properties;
  * {@link ZigBeeCoordinator#init()} before constructing this protocol.
  * {@link #init(Properties)} only wires the inbound callbacks — the
  * coordinator is already running by then.
+ *
+ * <h2>Identifiers</h2>
+ * <p><b>Protocol ID:</b> {@value #PROTOCOL_ID}.
+ * <p>This protocol uses the shared {@code babel-radio-api} surface; its
+ * inbound packet notification ({@link ZigBeePacketReceivedNotification},
+ * subclass of {@link pt.paradigmshift.babel.radio.notifications.RadioPacketReceivedNotification})
+ * inherits {@code NOTIFICATION_ID = 401} from the radio-api's reserved
+ * slot 400. The ZigBee-specific {@link ZigBeeHeartbeatNotification} is the
+ * protocol's own first notification, id {@code 1201}.
  */
 public class ZigBeeProtocol extends GenericProtocol {
 

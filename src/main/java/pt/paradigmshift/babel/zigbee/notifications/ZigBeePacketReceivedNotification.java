@@ -22,6 +22,12 @@ import pt.paradigmshift.babel.zigbee.ZigBeeAddress;
  *     int val = zb.getVal();
  * }
  * }</pre>
+ *
+ * <p><b>Handler class:</b> notification. <b>ID:</b> inherited
+ * {@code NOTIFICATION_ID = 401} from
+ * {@link RadioPacketReceivedNotification} (reserved in the
+ * {@code babel-radio-api} slot 400). Owning protocol: {@link
+ * pt.paradigmshift.babel.zigbee.ZigBeeProtocol} (id 1200).
  */
 public class ZigBeePacketReceivedNotification
         extends RadioPacketReceivedNotification {

@@ -7,15 +7,21 @@ gateway can share a single Ember EZSP USB dongle.
 
 **Group ID:** `pt.paradigmshift.babel`
 **Artifact ID:** `babel-zigbee-protocol`
-**Current version:** `0.2.0`
+**Current version:** `0.3.0`
 **Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.1.0` driver,
-`pt.paradigmshift.babel:babel-radio-api:0.1.0`, and
+`pt.paradigmshift.babel:babel-radio-api:0.2.0`, and
 `pt.paradigmshift.babel:babel-core:1.0.0`.
 
-> **0.2.0 is a breaking release.** The request and send-failure notification
-> types moved to the shared `babel-radio-api` library, the destination type
-> changed from `IeeeAddress` to `ZigBeeAddress` (a `RadioAddress` subclass),
-> and NWK-layer broadcast is now supported. See *Migration* below.
+> **0.3.0 is a breaking release.** It bumps the transitive
+> `babel-radio-api` dependency to `0.2.0`, which renumbered the shared
+> radio events into the reserved slot `400` (was `100`/`101`). Subscribers
+> recompile against the new IDs; no API names change. See the *Identifiers*
+> section below.
+
+> **0.2.0** was the earlier breaking release that moved the request and
+> send-failure notification types to the shared `babel-radio-api` library,
+> changed the destination type from `IeeeAddress` to `ZigBeeAddress`, and
+> added NWK-layer broadcast. See *Migration*.
 
 ---
 
@@ -57,26 +63,27 @@ notifications). The naming mirrors `BabelMessage.getSourceProto()`.
 
 ---
 
-## Request / notification surface
+## Protocol & event identifiers
 
-The request and shared-notification types live in **`babel-radio-api`** and
-are shared with every other radio Babel protocol. The protocol-specific bit
-is the `ZigBeeAddress` (an extension of `RadioAddress` wrapping an
-`IeeeAddress`), the `ZigBeePacketReceivedNotification` subclass adding the
-µBabel `id`/`val` fields, and the ZigBee-only heartbeat notification.
+Follows the ParadigmShift workspace Babel ID convention: protocols at
+100-multiples, events numbered `protocol_id + N` per handler class. This
+protocol owns slot `1200`. Its packet-received notification inherits its
+ID from the shared `babel-radio-api` reserved slot `400` so multi-radio
+subscribers can register a single handler; its heartbeat notification is
+the protocol's own first notification under slot `1200`.
 
-| Type | Origin | ID | Purpose |
-|---|---|---|---|
-| `SendRadioPacketRequest`          | `babel-radio-api`           | `100` (request)      | Unicast a payload — `destination` is a `ZigBeeAddress` |
-| `BroadcastRadioPacketRequest`     | `babel-radio-api`           | `101` (request)      | NWK-layer broadcast (defaults to `BROADCAST_ALL_DEVICES`) |
-| `RadioPacketReceivedNotification` | `babel-radio-api`           | `100` (notification) | Generic inbound packet — emitted as `ZigBeePacketReceivedNotification` (subclass) carrying `id`/`val` |
-| `RadioSendFailedNotification`     | `babel-radio-api`           | `101` (notification) | MTU exceeded, wrong-radio destination, or driver throw |
-| `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | `1201` (notification)| µBabel heartbeat attribute write — unconditional fan-out, no `sourceProto` filter. No LoRa analogue. |
-| `ZigBeeAddress`                   | `babel-zigbee-protocol`     | —                    | IEEE EUI-64 ZigBee address; `RadioAddress` subclass |
+| Type | Origin | Handler class | ID | Purpose |
+|---|---|---|---|---|
+| `ZigBeeProtocol`                  | `babel-zigbee-protocol`     | protocol      | `1200` | This protocol's `PROTOCOL_ID` |
+| `SendRadioPacketRequest`          | `babel-radio-api`           | request/reply | `401`  | Unicast a payload — `destination` is a `ZigBeeAddress` |
+| `BroadcastRadioPacketRequest`     | `babel-radio-api`           | request/reply | `402`  | NWK-layer broadcast (defaults to `BROADCAST_ALL_DEVICES`) |
+| `RadioPacketReceivedNotification` | `babel-radio-api`           | notification  | `401`  | Generic inbound packet — emitted as `ZigBeePacketReceivedNotification` (subclass) carrying `id`/`val` |
+| `RadioSendFailedNotification`     | `babel-radio-api`           | notification  | `402`  | MTU exceeded, wrong-radio destination, or driver throw |
+| `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | notification  | `1201` | µBabel heartbeat attribute write — unconditional fan-out, no `sourceProto` filter. No LoRa analogue. |
+| `ZigBeeAddress`                   | `babel-zigbee-protocol`     | —             | —      | IEEE EUI-64 ZigBee address; `RadioAddress` subclass (carries no event id) |
 
-The protocol itself registers as id `1200`. Routing from generic
-application code is one call: `addr.owningProtocolId()` returns `1200` for
-any `ZigBeeAddress`.
+Routing from generic application code is one call:
+`addr.owningProtocolId()` returns `1200` for any `ZigBeeAddress`.
 
 `MAX_USER_PAYLOAD_BYTES = 114` (= 116 B driver payload limit − 2 B
 `sourceProto` envelope). Requests with a larger payload trigger
@@ -115,7 +122,7 @@ Add to your `pom.xml`:
     <dependency>
         <groupId>pt.paradigmshift.babel</groupId>
         <artifactId>babel-zigbee-protocol</artifactId>
-        <version>0.2.0</version>
+        <version>0.3.0</version>
     </dependency>
 </dependencies>
 ```
@@ -252,8 +259,8 @@ Push a version tag — CI deploys automatically (mirroring the other
 ParadigmShift Maven libs):
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 ---

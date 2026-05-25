@@ -12,6 +12,10 @@ import pt.unl.fct.di.novasys.babel.generic.ProtoNotification;
  *
  * <p>This notification is ZigBee-specific (LoRa has no analogue) and lives
  * in {@code babel-zigbee-protocol} rather than {@code babel-radio-api}.
+ *
+ * <p><b>Handler class:</b> notification. <b>ID:</b> {@value #NOTIFICATION_ID}
+ * — first notification under {@link
+ * pt.paradigmshift.babel.zigbee.ZigBeeProtocol} (id 1200).
  */
 public class ZigBeeHeartbeatNotification extends ProtoNotification {
 
