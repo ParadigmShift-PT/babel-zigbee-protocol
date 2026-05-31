@@ -7,10 +7,10 @@ gateway can share a single Ember EZSP USB dongle.
 
 **Group ID:** `pt.paradigmshift.babel`
 **Artifact ID:** `babel-zigbee-protocol`
-**Current version:** `0.3.0`
-**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.1.0` driver,
-`pt.paradigmshift.babel:babel-radio-api:0.2.0`, and
-`pt.paradigmshift.babel:babel-core:1.0.0`.
+**Current version:** `0.5.0`
+**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.2.0` driver,
+`pt.paradigmshift.babel:babel-radio-api:0.3.0`, and
+`pt.paradigmshift.babel:babel-core:1.0.1`.
 
 > **0.3.0 is a breaking release.** It bumps the transitive
 > `babel-radio-api` dependency to `0.2.0`, which renumbered the shared
@@ -122,7 +122,7 @@ Add to your `pom.xml`:
     <dependency>
         <groupId>pt.paradigmshift.babel</groupId>
         <artifactId>babel-zigbee-protocol</artifactId>
-        <version>0.3.0</version>
+        <version>0.5.0</version>
     </dependency>
 </dependencies>
 ```
@@ -241,7 +241,7 @@ protocol event loop.
 
 ## Building
 
-Requires Java 21 and Maven 3.6+.
+Requires Java 17 and Maven 3.6+.
 
 ```bash
 mvn verify    # compile + (no) tests
