@@ -188,8 +188,6 @@ public class ZigBeeProtocol extends GenericProtocol {
 
     private static ZigBeePacket buildPacket(byte[] enveloped) {
         return new ZigBeePacket.Builder()
-                .id(0)
-                .val(0)
                 .payload(enveloped)
                 .build();
     }
@@ -208,8 +206,7 @@ public class ZigBeeProtocol extends GenericProtocol {
                          payload.length);
 
         triggerNotification(new ZigBeePacketReceivedNotification(
-                destProto, new ZigBeeAddress(origin),
-                packet.getId(), packet.getVal(), payload));
+                destProto, new ZigBeeAddress(origin), payload));
     }
 
     private void deliverHeartbeat(IeeeAddress origin, Integer counter) {
