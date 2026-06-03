@@ -7,10 +7,18 @@ gateway can share a single Ember EZSP USB dongle.
 
 **Group ID:** `pt.paradigmshift.babel`
 **Artifact ID:** `babel-zigbee-protocol`
-**Current version:** `0.5.0`
-**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.2.0` driver,
-`pt.paradigmshift.babel:babel-radio-api:0.3.0`, and
+**Current version:** `0.7.0`
+**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.4.0` driver,
+`pt.paradigmshift.babel:babel-radio-api:0.4.0`, and
 `pt.paradigmshift.babel:babel-core:1.0.1`.
+
+> **0.7.0 is a breaking release.** `ZigBeePacketReceivedNotification` no longer
+> carries `getPacketId()`/`getVal()` — the `ubabel_zb_packet_t` framing those
+> came from was scrapped (it held no useful information), so the ZigBee path now
+> uses the **same wrapped `ubabel_packet_t` as LoRa**. The driver dep moved to
+> `babel-zigbee:0.4.0`. Subscribers that read `getPacketId()`/`getVal()` must
+> drop those calls; the demux metadata they were used for now lives in the
+> `ubabel_packet_t` body decoded from `getPayload()`.
 
 > **0.3.0 is a breaking release.** It bumps the transitive
 > `babel-radio-api` dependency to `0.2.0`, which renumbered the shared
@@ -38,14 +46,14 @@ protocol prepends two bytes inside the `ZigBeePacket` payload:
 [ 2 bytes destProto (big-endian) ][ user payload ... ]
 ```
 
-The envelope lives inside `ZigBeePacket.payload` only. The `id` and `val`
-fields are not touched, so end-device firmware that uses them for
-application-level demultiplexing keeps working unchanged.
+The envelope is the leading 2 bytes of the OCTET_STRING value — identical to the
+LoRa side. (Since `babel-zigbee:0.4.0` the value is a bare wrapped
+`ubabel_packet_t`; the scrapped `ubabel_zb_packet_t` `id`/`val` header is gone.)
 
 Inbound packets are delivered to every protocol that subscribed to
 `RadioPacketReceivedNotification`; each one keeps only frames addressed to it
 (`getDestProto() == its PROTOCOL_ID`). The ZigBee protocol emits a subclass —
-`ZigBeePacketReceivedNotification` — carrying the µBabel `id` and `val` fields.
+`ZigBeePacketReceivedNotification` — that adds only a typed-origin accessor.
 Generic subscribers see only the base type; ZigBee-aware subscribers cast to
 the subclass:
 
@@ -53,7 +61,7 @@ the subclass:
 subscribeNotification(RadioPacketReceivedNotification.NOTIFICATION_ID, (n, src) -> {
     if (n.getDestProto() != MY_PROTOCOL_ID) return;   // not addressed to us
     if (n instanceof ZigBeePacketReceivedNotification zb) {
-        handlePeerMessage(zb.getZigBeeOrigin(), zb.getPacketId(), zb.getPayload());
+        handlePeerMessage(zb.getZigBeeOrigin(), zb.getPayload());
     }
 });
 ```
@@ -80,7 +88,7 @@ the protocol's own first notification under slot `1200`.
 | `ZigBeeProtocol`                  | `babel-zigbee-protocol`     | protocol      | `1200` | This protocol's `PROTOCOL_ID` |
 | `SendRadioPacketRequest`          | `babel-radio-api`           | request/reply | `401`  | Unicast a payload — `destination` is a `ZigBeeAddress` |
 | `BroadcastRadioPacketRequest`     | `babel-radio-api`           | request/reply | `402`  | NWK-layer broadcast (defaults to `BROADCAST_ALL_DEVICES`) |
-| `RadioPacketReceivedNotification` | `babel-radio-api`           | notification  | `401`  | Generic inbound packet — emitted as `ZigBeePacketReceivedNotification` (subclass) carrying `id`/`val` |
+| `RadioPacketReceivedNotification` | `babel-radio-api`           | notification  | `401`  | Generic inbound packet — emitted as `ZigBeePacketReceivedNotification` (subclass adds only `getZigBeeOrigin()`) |
 | `RadioSendFailedNotification`     | `babel-radio-api`           | notification  | `402`  | MTU exceeded, wrong-radio destination, or driver throw |
 | `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | notification  | `1201` | µBabel heartbeat attribute write — unconditional fan-out, no `destProto` filter. No LoRa analogue. |
 | `ZigBeeAddress`                   | `babel-zigbee-protocol`     | —             | —      | IEEE EUI-64 ZigBee address; `RadioAddress` subclass (carries no event id) |
@@ -125,7 +133,7 @@ Add to your `pom.xml`:
     <dependency>
         <groupId>pt.paradigmshift.babel</groupId>
         <artifactId>babel-zigbee-protocol</artifactId>
-        <version>0.5.0</version>
+        <version>0.7.0</version>
     </dependency>
 </dependencies>
 ```
@@ -199,7 +207,7 @@ public class MyControlProtocol extends GenericProtocol {
         if (n.getDestProto() != PROTOCOL_ID) return;              // not for us
         if (src != ZigBeeProtocol.PROTOCOL_ID) return;            // not ZigBee
         ZigBeePacketReceivedNotification zb = (ZigBeePacketReceivedNotification) n;
-        handleDeviceMessage(zb.getZigBeeOrigin(), zb.getPacketId(), zb.getPayload());
+        handleDeviceMessage(zb.getZigBeeOrigin(), zb.getPayload());
     }
 
     private void onHeartbeat(ZigBeeHeartbeatNotification n, short src) {
@@ -224,7 +232,7 @@ their own `PROTOCOL_ID` as `destProto` on every send, filter on
 |---|---|
 | `SendZigBeePacketRequest(sp, IeeeAddress dest, payload)` | `SendRadioPacketRequest(sp, new ZigBeeAddress(dest), payload)` |
 | (no broadcast existed) | `BroadcastRadioPacketRequest(sp, payload)` — now supported via the driver's NWK-broadcast path |
-| `ZigBeePacketReceivedNotification` | still exists, but now `extends RadioPacketReceivedNotification`; subscribe to `RadioPacketReceivedNotification.NOTIFICATION_ID` and `instanceof`-cast to access `id`/`val`. `getOrigin()` now returns `RadioAddress` — use `getZigBeeOrigin()` for the typed accessor. |
+| `ZigBeePacketReceivedNotification` | still exists, but now `extends RadioPacketReceivedNotification`; subscribe to `RadioPacketReceivedNotification.NOTIFICATION_ID` and `instanceof`-cast for the typed `getZigBeeOrigin()`. (In `0.7.0` the `getPacketId()`/`getVal()` accessors were removed — the `ubabel_zb_packet_t` framing was scrapped.) `getOrigin()` returns `RadioAddress`. |
 | `ZigBeeSendFailedNotification` | `RadioSendFailedNotification`; destination is a `RadioAddress` (cast to `ZigBeeAddress` if you need the IEEE). |
 | `ZigBeeHeartbeatNotification` | unchanged in shape but `getOrigin()` now returns `ZigBeeAddress` instead of `IeeeAddress` (call `.getIeeeAddress()` on it for the raw EUI). |
 
@@ -262,8 +270,8 @@ Push a version tag — CI deploys automatically (mirroring the other
 ParadigmShift Maven libs):
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.7.0
+git push origin v0.7.0
 ```
 
 ---
