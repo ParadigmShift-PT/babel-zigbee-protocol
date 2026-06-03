@@ -6,7 +6,7 @@ import pt.unl.fct.di.novasys.babel.generic.ProtoNotification;
 /**
  * Delivered for every heartbeat written by an end device to the µBabel
  * heartbeat attribute. Heartbeats carry no protocol-specific application
- * payload — there is no {@code sourceProto} envelope on them — so this
+ * payload — there is no {@code destProto} envelope on them — so this
  * notification fans out to every subscriber unconditionally. Filter at the
  * subscriber side if you only care about a subset of devices.
  *

@@ -29,12 +29,13 @@ gateway can share a single Ember EZSP USB dongle.
 
 ZigBee is single-coordinator by construction — every joined end device is
 reachable through one dongle. To let multiple protocols share that coordinator
-without stepping on each other, every send request is tagged with the sender's
-16-bit `sourceProto` (its Babel `PROTOCOL_ID`). On the wire, this protocol
-prepends two bytes inside the `ZigBeePacket` payload:
+without stepping on each other, every send request is tagged with a 16-bit
+`destProto` — the id of the protocol the frame is for (by Babel's symmetric
+N↔N convention a sender passes its own `PROTOCOL_ID`). On the wire, this
+protocol prepends two bytes inside the `ZigBeePacket` payload:
 
 ```
-[ 2 bytes sourceProto (big-endian) ][ user payload ... ]
+[ 2 bytes destProto (big-endian) ][ user payload ... ]
 ```
 
 The envelope lives inside `ZigBeePacket.payload` only. The `id` and `val`
@@ -42,24 +43,26 @@ fields are not touched, so end-device firmware that uses them for
 application-level demultiplexing keeps working unchanged.
 
 Inbound packets are delivered to every protocol that subscribed to
-`RadioPacketReceivedNotification`; each one filters by its own `PROTOCOL_ID`.
-The ZigBee protocol emits a subclass — `ZigBeePacketReceivedNotification` —
-carrying the µBabel `id` and `val` fields. Generic subscribers see only
-the base type; ZigBee-aware subscribers cast to the subclass:
+`RadioPacketReceivedNotification`; each one keeps only frames addressed to it
+(`getDestProto() == its PROTOCOL_ID`). The ZigBee protocol emits a subclass —
+`ZigBeePacketReceivedNotification` — carrying the µBabel `id` and `val` fields.
+Generic subscribers see only the base type; ZigBee-aware subscribers cast to
+the subclass:
 
 ```java
 subscribeNotification(RadioPacketReceivedNotification.NOTIFICATION_ID, (n, src) -> {
-    if (n.getSourceProto() != MY_PROTOCOL_ID) return;
+    if (n.getDestProto() != MY_PROTOCOL_ID) return;   // not addressed to us
     if (n instanceof ZigBeePacketReceivedNotification zb) {
         handlePeerMessage(zb.getZigBeeOrigin(), zb.getPacketId(), zb.getPayload());
     }
 });
 ```
 
-`sourceProto` here is the *remote* sender's protocol id, carried in the wire
-envelope — distinct from the local `sourceProto` parameter Babel passes to
-every handler (which is always `ZigBeeProtocol.PROTOCOL_ID` for these
-notifications). The naming mirrors `BabelMessage.getSourceProto()`.
+`getDestProto()` is the destination protocol id carried in the wire envelope —
+distinct from the `src` parameter Babel passes to every handler (which here is
+always `ZigBeeProtocol.PROTOCOL_ID`, i.e. the delivering bridge). The field was
+named `sourceProto` before `babel-radio-api 0.4.0`; the rename makes the
+receive-side meaning (the addressee) read correctly.
 
 ---
 
@@ -79,14 +82,14 @@ the protocol's own first notification under slot `1200`.
 | `BroadcastRadioPacketRequest`     | `babel-radio-api`           | request/reply | `402`  | NWK-layer broadcast (defaults to `BROADCAST_ALL_DEVICES`) |
 | `RadioPacketReceivedNotification` | `babel-radio-api`           | notification  | `401`  | Generic inbound packet — emitted as `ZigBeePacketReceivedNotification` (subclass) carrying `id`/`val` |
 | `RadioSendFailedNotification`     | `babel-radio-api`           | notification  | `402`  | MTU exceeded, wrong-radio destination, or driver throw |
-| `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | notification  | `1201` | µBabel heartbeat attribute write — unconditional fan-out, no `sourceProto` filter. No LoRa analogue. |
+| `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | notification  | `1201` | µBabel heartbeat attribute write — unconditional fan-out, no `destProto` filter. No LoRa analogue. |
 | `ZigBeeAddress`                   | `babel-zigbee-protocol`     | —             | —      | IEEE EUI-64 ZigBee address; `RadioAddress` subclass (carries no event id) |
 
 Routing from generic application code is one call:
 `addr.owningProtocolId()` returns `1200` for any `ZigBeeAddress`.
 
 `MAX_USER_PAYLOAD_BYTES = 114` (= 116 B driver payload limit − 2 B
-`sourceProto` envelope). Requests with a larger payload trigger
+`destProto` envelope). Requests with a larger payload trigger
 `RadioSendFailedNotification`.
 
 ### What is *not* exposed
@@ -193,27 +196,27 @@ public class MyControlProtocol extends GenericProtocol {
     }
 
     private void onRadioIn(RadioPacketReceivedNotification n, short src) {
-        if (n.getSourceProto() != PROTOCOL_ID) return;            // not for us
+        if (n.getDestProto() != PROTOCOL_ID) return;              // not for us
         if (src != ZigBeeProtocol.PROTOCOL_ID) return;            // not ZigBee
         ZigBeePacketReceivedNotification zb = (ZigBeePacketReceivedNotification) n;
         handleDeviceMessage(zb.getZigBeeOrigin(), zb.getPacketId(), zb.getPayload());
     }
 
     private void onHeartbeat(ZigBeeHeartbeatNotification n, short src) {
-        // No sourceProto on heartbeats — fan-out is unconditional.
+        // No destProto on heartbeats — fan-out is unconditional.
         liveness.put(n.getOrigin(), n.getCounter());
     }
 
     private void onRadioFail(RadioSendFailedNotification n, short src) {
-        if (n.getSourceProto() != PROTOCOL_ID) return;
+        if (n.getDestProto() != PROTOCOL_ID) return;
         logger.warn("Radio send failed to {}: {}", n.getDestination(), n.getReason());
     }
 }
 ```
 
 Two unrelated protocols can coexist with no further coordination — they stamp
-their own `PROTOCOL_ID` as `sourceProto` on every send, filter on
-`n.getSourceProto()` in their handlers, and ignore the rest.
+their own `PROTOCOL_ID` as `destProto` on every send, filter on
+`n.getDestProto()` in their handlers, and ignore the rest.
 
 ### Migration from 0.1.0
 

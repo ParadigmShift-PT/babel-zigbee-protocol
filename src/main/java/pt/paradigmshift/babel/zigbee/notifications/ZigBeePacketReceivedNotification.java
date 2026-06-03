@@ -35,12 +35,12 @@ public class ZigBeePacketReceivedNotification
     private final int packetId;
     private final int val;
 
-    public ZigBeePacketReceivedNotification(short sourceProto,
+    public ZigBeePacketReceivedNotification(short destProto,
                                             ZigBeeAddress origin,
                                             int packetId,
                                             int val,
                                             byte[] payload) {
-        super(sourceProto, origin, payload);
+        super(destProto, origin, payload);
         this.packetId = packetId & 0xFFFF;
         this.val = val & 0xFFFF;
     }

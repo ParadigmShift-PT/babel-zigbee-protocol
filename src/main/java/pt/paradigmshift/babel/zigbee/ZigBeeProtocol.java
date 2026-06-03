@@ -20,10 +20,11 @@ import java.util.Properties;
  * Babel protocol that adapts a {@link ZigBeeCoordinator} driver to the
  * shared {@code babel-radio-api} request/notification surface. Multiple
  * Babel protocols on the same gateway can share a single Ember EZSP ZigBee
- * coordinator by tagging their outbound traffic with their own
- * {@code sourceProto} (their {@code PROTOCOL_ID}); the protocol writes
- * those two bytes inside the {@code ZigBeePacket} payload and surfaces
- * them again on inbound notifications.
+ * coordinator by tagging each frame with a 2-byte {@code destProto} — the id
+ * of the protocol the frame is for (by the symmetric N↔N convention a sender
+ * uses its own {@code PROTOCOL_ID}); the protocol writes those two bytes
+ * inside the {@code ZigBeePacket} payload and surfaces them again on inbound
+ * notifications, where subscribers filter on them.
  *
  * <p>The envelope lives inside {@code ZigBeePacket.payload} only. The
  * {@code id} and {@code val} fields are not touched — end-device firmware
@@ -32,7 +33,7 @@ import java.util.Properties;
  *
  * <h2>Wire layout inside the ZigBee payload</h2>
  * <pre>
- *   [ 2 bytes sourceProto (big-endian) ][ user payload ... ]
+ *   [ 2 bytes destProto (big-endian) ][ user payload ... ]
  * </pre>
  *
  * <h2>Inbound notifications</h2>
@@ -44,7 +45,7 @@ import java.util.Properties;
  *   extras.</li>
  *   <li>{@link ZigBeeHeartbeatNotification} — fires for every µBabel
  *   heartbeat attribute write from an end device. Heartbeats carry no
- *   {@code sourceProto} envelope (they're a periodic liveness signal, not
+ *   {@code destProto} envelope (they're a periodic liveness signal, not
  *   application traffic), so the notification fans out unconditionally.
  *   This notification is ZigBee-specific and has no shared counterpart.</li>
  * </ul>
@@ -87,12 +88,12 @@ public class ZigBeeProtocol extends GenericProtocol {
     /**
      * Maximum user payload (in bytes) accepted by send/broadcast requests.
      * Derived from the driver's {@link ZigBeeCoordinator#MAX_PAYLOAD_SIZE_BYTES}
-     * (116 B) minus the 2-byte sourceProto envelope this protocol adds.
+     * (116 B) minus the 2-byte destProto envelope this protocol adds.
      */
     public static final int MAX_USER_PAYLOAD_BYTES =
             ZigBeeCoordinator.MAX_PAYLOAD_SIZE_BYTES - 2;
 
-    private static final int SOURCE_PROTO_BYTES = 2;
+    private static final int DEST_PROTO_BYTES = 2;
 
     private final ZigBeeCoordinator coordinator;
 
@@ -124,16 +125,16 @@ public class ZigBeeProtocol extends GenericProtocol {
         RadioAddress dst = req.getDestination();
         if (!(dst instanceof ZigBeeAddress zb)) {
             triggerNotification(new RadioSendFailedNotification(
-                    req.getSourceProto(), dst,
+                    req.getDestProto(), dst,
                     "ZigBeeProtocol received non-ZigBeeAddress destination: "
                             + (dst == null ? "null" : dst.getClass().getName())));
             return;
         }
 
-        byte[] enveloped = envelope(req.getSourceProto(), req.getPayload());
+        byte[] enveloped = envelope(req.getDestProto(), req.getPayload());
         if (enveloped == null) {
             triggerNotification(new RadioSendFailedNotification(
-                    req.getSourceProto(), zb,
+                    req.getDestProto(), zb,
                     "Payload " + req.getPayload().length + "B exceeds MTU "
                             + MAX_USER_PAYLOAD_BYTES + "B"));
             return;
@@ -144,20 +145,20 @@ public class ZigBeeProtocol extends GenericProtocol {
                                  buildPacket(enveloped));
         } catch (Exception e) {
             logger.warn(
-                    "ZigBee transmit failed for sourceProto={} dest={}: {}",
-                    req.getSourceProto(), zb, e.toString());
+                    "ZigBee transmit failed for destProto={} dest={}: {}",
+                    req.getDestProto(), zb, e.toString());
             triggerNotification(new RadioSendFailedNotification(
-                    req.getSourceProto(), zb, e.toString()));
+                    req.getDestProto(), zb, e.toString()));
         }
     }
 
     private void uponBroadcastRequest(BroadcastRadioPacketRequest req,
                                       short ignored) {
-        byte[] enveloped = envelope(req.getSourceProto(), req.getPayload());
+        byte[] enveloped = envelope(req.getDestProto(), req.getPayload());
         if (enveloped == null) {
             // Broadcast has no single destination — pass null.
             triggerNotification(new RadioSendFailedNotification(
-                    req.getSourceProto(), null,
+                    req.getDestProto(), null,
                     "Payload " + req.getPayload().length + "B exceeds MTU "
                             + MAX_USER_PAYLOAD_BYTES + "B"));
             return;
@@ -166,21 +167,21 @@ public class ZigBeeProtocol extends GenericProtocol {
         try {
             coordinator.transmit(buildPacket(enveloped));
         } catch (Exception e) {
-            logger.warn("ZigBee broadcast failed for sourceProto={}: {}",
-                        req.getSourceProto(), e.toString());
+            logger.warn("ZigBee broadcast failed for destProto={}: {}",
+                        req.getDestProto(), e.toString());
             triggerNotification(new RadioSendFailedNotification(
-                    req.getSourceProto(), null, e.toString()));
+                    req.getDestProto(), null, e.toString()));
         }
     }
 
     /** Returns the source-proto-prefixed payload, or {@code null} if the
      *  user payload exceeds the MTU. */
-    private static byte[] envelope(short sourceProto, byte[] payload) {
+    private static byte[] envelope(short destProto, byte[] payload) {
         if (payload.length > MAX_USER_PAYLOAD_BYTES) return null;
-        byte[] enveloped = new byte[SOURCE_PROTO_BYTES + payload.length];
-        enveloped[0] = (byte) ((sourceProto >> 8) & 0xFF);
-        enveloped[1] = (byte) (sourceProto & 0xFF);
-        System.arraycopy(payload, 0, enveloped, SOURCE_PROTO_BYTES,
+        byte[] enveloped = new byte[DEST_PROTO_BYTES + payload.length];
+        enveloped[0] = (byte) ((destProto >> 8) & 0xFF);
+        enveloped[1] = (byte) (destProto & 0xFF);
+        System.arraycopy(payload, 0, enveloped, DEST_PROTO_BYTES,
                          payload.length);
         return enveloped;
     }
@@ -196,18 +197,18 @@ public class ZigBeeProtocol extends GenericProtocol {
     private void deliverIncoming(IeeeAddress origin, ZigBeePacket packet) {
         byte[] enveloped = packet.getPayload();
         if (enveloped == null
-                || enveloped.length < SOURCE_PROTO_BYTES) {
+                || enveloped.length < DEST_PROTO_BYTES) {
             // Foreign sender that doesn't speak our envelope — silently drop.
             return;
         }
-        short sourceProto = (short) (((enveloped[0] & 0xFF) << 8)
+        short destProto = (short) (((enveloped[0] & 0xFF) << 8)
                                      | (enveloped[1] & 0xFF));
-        byte[] payload = new byte[enveloped.length - SOURCE_PROTO_BYTES];
-        System.arraycopy(enveloped, SOURCE_PROTO_BYTES, payload, 0,
+        byte[] payload = new byte[enveloped.length - DEST_PROTO_BYTES];
+        System.arraycopy(enveloped, DEST_PROTO_BYTES, payload, 0,
                          payload.length);
 
         triggerNotification(new ZigBeePacketReceivedNotification(
-                sourceProto, new ZigBeeAddress(origin),
+                destProto, new ZigBeeAddress(origin),
                 packet.getId(), packet.getVal(), payload));
     }
 
