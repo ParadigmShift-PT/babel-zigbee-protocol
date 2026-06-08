@@ -4,6 +4,8 @@ import com.zsmartsystems.zigbee.IeeeAddress;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import pt.paradigmshift.babel.radio.RadioAddress;
+import pt.paradigmshift.babel.radio.frag.RadioFragmenter;
+import pt.paradigmshift.babel.radio.frag.RadioReassembler;
 import pt.paradigmshift.babel.radio.notifications.RadioSendFailedNotification;
 import pt.paradigmshift.babel.radio.requests.BroadcastRadioPacketRequest;
 import pt.paradigmshift.babel.radio.requests.SendRadioPacketRequest;
@@ -14,6 +16,8 @@ import pt.unl.fct.di.novasys.babel.exceptions.HandlerRegistrationException;
 import zigbee.ZigBeeCoordinator;
 import zigbee.ZigBeePacket;
 
+import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 
 /**
@@ -35,6 +39,13 @@ import java.util.Properties;
  * <pre>
  *   [ 2 bytes destProto (big-endian) ][ user payload ... ]
  * </pre>
+ *
+ * <h2>Transparent fragmentation</h2>
+ * A message larger than one frame is split by {@link RadioFragmenter} into
+ * fragment frames (marked by a reserved sentinel in the destProto position)
+ * and rebuilt by a {@link RadioReassembler} on receive, so callers send and
+ * receive whole payloads of any size up to {@link #MAX_USER_PAYLOAD_BYTES}. A
+ * message that fits one frame is sent verbatim — zero overhead, unchanged wire.
  *
  * <h2>Inbound notifications</h2>
  * <ul>
@@ -86,16 +97,32 @@ public class ZigBeeProtocol extends GenericProtocol {
     public static final short PROTOCOL_ID = 1200;
 
     /**
-     * Maximum user payload (in bytes) accepted by send/broadcast requests.
-     * Derived from the driver's {@link ZigBeeCoordinator#MAX_PAYLOAD_SIZE_BYTES}
-     * (116 B) minus the 2-byte destProto envelope this protocol adds.
+     * Radio-payload capacity of a single ZigBee frame, in bytes: the ZCL
+     * OCTET_STRING value cap the coordinator accepts
+     * ({@link ZigBeeCoordinator#MAX_PACKET_SIZE_BYTES}, 121 B). A message whose
+     * enveloped form ([destProto][payload]) exceeds this is transparently
+     * fragmented; one that fits is sent verbatim.
+     */
+    public static final int FRAME_PAYLOAD_CAPACITY =
+            ZigBeeCoordinator.MAX_PACKET_SIZE_BYTES;
+
+    /**
+     * Maximum user payload (in bytes) a send/broadcast request can carry. With
+     * transparent fragmentation this is the fragmented ceiling (up to
+     * {@link RadioFragmenter#MAX_FRAGMENTS} frames), not a single-frame limit;
+     * a single frame still carries up to {@code FRAME_PAYLOAD_CAPACITY - 2}
+     * (119 B) with zero overhead.
      */
     public static final int MAX_USER_PAYLOAD_BYTES =
-            ZigBeeCoordinator.MAX_PAYLOAD_SIZE_BYTES - 2;
+            RadioFragmenter.MAX_FRAGMENTS
+                    * (FRAME_PAYLOAD_CAPACITY - RadioFragmenter.FRAGMENT_HEADER_BYTES)
+                    - 2;
 
     private static final int DEST_PROTO_BYTES = 2;
 
     private final ZigBeeCoordinator coordinator;
+    private final RadioReassembler reassembler = new RadioReassembler();
+    private int txMsgId = 0;
 
     /**
      * @param coordinator a fully constructed and initialised
@@ -131,18 +158,21 @@ public class ZigBeeProtocol extends GenericProtocol {
             return;
         }
 
-        byte[] enveloped = envelope(req.getDestProto(), req.getPayload());
-        if (enveloped == null) {
+        List<byte[]> frames;
+        try {
+            frames = fragment(req.getDestProto(), req.getPayload());
+        } catch (IllegalArgumentException e) {
             triggerNotification(new RadioSendFailedNotification(
                     req.getDestProto(), zb,
-                    "Payload " + req.getPayload().length + "B exceeds MTU "
-                            + MAX_USER_PAYLOAD_BYTES + "B"));
+                    "Payload " + req.getPayload().length + "B too large: "
+                            + e.getMessage()));
             return;
         }
 
         try {
-            coordinator.transmit(zb.getIeeeAddress(),
-                                 buildPacket(enveloped));
+            for (byte[] frame : frames) {
+                coordinator.transmit(zb.getIeeeAddress(), buildPacket(frame));
+            }
         } catch (Exception e) {
             logger.warn(
                     "ZigBee transmit failed for destProto={} dest={}: {}",
@@ -154,18 +184,22 @@ public class ZigBeeProtocol extends GenericProtocol {
 
     private void uponBroadcastRequest(BroadcastRadioPacketRequest req,
                                       short ignored) {
-        byte[] enveloped = envelope(req.getDestProto(), req.getPayload());
-        if (enveloped == null) {
+        List<byte[]> frames;
+        try {
+            frames = fragment(req.getDestProto(), req.getPayload());
+        } catch (IllegalArgumentException e) {
             // Broadcast has no single destination — pass null.
             triggerNotification(new RadioSendFailedNotification(
                     req.getDestProto(), null,
-                    "Payload " + req.getPayload().length + "B exceeds MTU "
-                            + MAX_USER_PAYLOAD_BYTES + "B"));
+                    "Payload " + req.getPayload().length + "B too large: "
+                            + e.getMessage()));
             return;
         }
 
         try {
-            coordinator.transmit(buildPacket(enveloped));
+            for (byte[] frame : frames) {
+                coordinator.transmit(buildPacket(frame));
+            }
         } catch (Exception e) {
             logger.warn("ZigBee broadcast failed for destProto={}: {}",
                         req.getDestProto(), e.toString());
@@ -174,28 +208,43 @@ public class ZigBeeProtocol extends GenericProtocol {
         }
     }
 
-    /** Returns the source-proto-prefixed payload, or {@code null} if the
-     *  user payload exceeds the MTU. */
-    private static byte[] envelope(short destProto, byte[] payload) {
-        if (payload.length > MAX_USER_PAYLOAD_BYTES) return null;
+    /**
+     * Envelopes the payload with the 2-byte destProto and transparently
+     * fragments it to the ZigBee frame capacity, returning one byte[] per
+     * frame (a single element when it already fits one frame).
+     *
+     * @throws IllegalArgumentException if the message exceeds the fragmented
+     *         ceiling ({@link RadioFragmenter#MAX_FRAGMENTS} frames)
+     */
+    private List<byte[]> fragment(short destProto, byte[] payload) {
         byte[] enveloped = new byte[DEST_PROTO_BYTES + payload.length];
         enveloped[0] = (byte) ((destProto >> 8) & 0xFF);
         enveloped[1] = (byte) (destProto & 0xFF);
         System.arraycopy(payload, 0, enveloped, DEST_PROTO_BYTES,
                          payload.length);
-        return enveloped;
+        return RadioFragmenter.fragment(enveloped, FRAME_PAYLOAD_CAPACITY,
+                                        txMsgId++ & 0xFF);
     }
 
-    private static ZigBeePacket buildPacket(byte[] enveloped) {
+    private static ZigBeePacket buildPacket(byte[] frame) {
         return new ZigBeePacket.Builder()
-                .payload(enveloped)
+                .payload(frame)
                 .build();
     }
 
     private void deliverIncoming(IeeeAddress origin, ZigBeePacket packet) {
-        byte[] enveloped = packet.getPayload();
-        if (enveloped == null
-                || enveloped.length < DEST_PROTO_BYTES) {
+        byte[] framePayload = packet.getPayload();
+        if (framePayload == null) {
+            return;
+        }
+        // Transparent reassembly: a non-fragmented frame returns immediately;
+        // a fragment is buffered (keyed on the origin) until complete.
+        Optional<byte[]> assembled = reassembler.offer(origin, framePayload);
+        if (assembled.isEmpty()) {
+            return; // incomplete message — waiting for more fragments
+        }
+        byte[] enveloped = assembled.get();
+        if (enveloped.length < DEST_PROTO_BYTES) {
             // Foreign sender that doesn't speak our envelope — silently drop.
             return;
         }
