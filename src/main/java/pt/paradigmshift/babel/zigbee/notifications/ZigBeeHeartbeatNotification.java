@@ -13,6 +13,14 @@ import pt.unl.fct.di.novasys.babel.generic.ProtoNotification;
  * <p>This notification is ZigBee-specific (LoRa has no analogue) and lives
  * in {@code babel-zigbee-protocol} rather than {@code babel-radio-api}.
  *
+ * <p><b>Dormant at present.</b> The heartbeat is the one µBabel value still
+ * carried as a ZCL attribute write (DATA/DISCOVERY moved to custom commands
+ * in {@code babel-zigbee:0.5.0}), and the current µBabel firmware has no
+ * heartbeat sender ({@code zb_send_heartbeat} was removed) — so this
+ * notification never fires until the firmware regains one. The receive path
+ * stays wired end-to-end (driver {@code heartbeatHandler} → this
+ * notification) so it resumes working with no Java-side change.
+ *
  * <p><b>Handler class:</b> notification. <b>ID:</b> {@value #NOTIFICATION_ID}
  * — first notification under {@link
  * pt.paradigmshift.babel.zigbee.ZigBeeProtocol} (id 1200).

@@ -7,10 +7,28 @@ gateway can share a single Ember EZSP USB dongle.
 
 **Group ID:** `pt.paradigmshift.babel`
 **Artifact ID:** `babel-zigbee-protocol`
-**Current version:** `0.7.0`
-**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.4.0` driver,
-`pt.paradigmshift.babel:babel-radio-api:0.4.0`, and
+**Current version:** `0.9.0`
+**Tested with:** `pt.paradigmshift.iot:babel-zigbee:0.5.0` driver,
+`pt.paradigmshift.babel:babel-radio-api:0.5.0`, and
 `pt.paradigmshift.babel:babel-core:1.0.1`.
+
+> **0.9.0 — driver transport moved to ZCL custom commands (no surface
+> change).** The driver dependency moved to `babel-zigbee:0.5.0`, where
+> DATA/DISCOVERY traffic rides as ZCL cluster-specific custom commands
+> (ids `0x0003`/`0x0005` on cluster `0xFF00`, bidirectional) instead of
+> attribute writes — matching the 2026-06 µBabel firmware, which went deaf
+> to attribute-write traffic. The µBabel heartbeat stays an attribute write
+> but is **dormant** (the firmware currently has no heartbeat sender;
+> `ZigBeeHeartbeatNotification` never fires until it returns — the path
+> stays wired). This protocol's requests, notifications, `destProto`
+> envelope, and fragmentation wire format are all unchanged: consumers
+> recompile against the new version with no code change.
+
+> **0.8.0 — transparent fragmentation.** Sends/broadcasts larger than one
+> ZigBee frame are split by `RadioFragmenter` (from `babel-radio-api:0.5.0`)
+> and rebuilt on receive by a `RadioReassembler` keyed on the origin
+> `IeeeAddress`; a message that fits one frame is sent verbatim (unchanged
+> wire). See *Protocol & event identifiers* for the new payload ceiling.
 
 > **0.7.0 is a breaking release.** `ZigBeePacketReceivedNotification` no longer
 > carries `getPacketId()`/`getVal()` — the `ubabel_zb_packet_t` framing those
@@ -48,7 +66,10 @@ protocol prepends two bytes inside the `ZigBeePacket` payload:
 
 The envelope is the leading 2 bytes of the OCTET_STRING value — identical to the
 LoRa side. (Since `babel-zigbee:0.4.0` the value is a bare wrapped
-`ubabel_packet_t`; the scrapped `ubabel_zb_packet_t` `id`/`val` header is gone.)
+`ubabel_packet_t`; the scrapped `ubabel_zb_packet_t` `id`/`val` header is gone.
+Since `babel-zigbee:0.5.0` the value travels as the payload of a ZCL
+cluster-specific custom command rather than an attribute write — a
+driver-internal transport detail this protocol never sees.)
 
 Inbound packets are delivered to every protocol that subscribed to
 `RadioPacketReceivedNotification`; each one keeps only frames addressed to it
@@ -90,15 +111,19 @@ the protocol's own first notification under slot `1200`.
 | `BroadcastRadioPacketRequest`     | `babel-radio-api`           | request/reply | `402`  | NWK-layer broadcast (defaults to `BROADCAST_ALL_DEVICES`) |
 | `RadioPacketReceivedNotification` | `babel-radio-api`           | notification  | `401`  | Generic inbound packet — emitted as `ZigBeePacketReceivedNotification` (subclass adds only `getZigBeeOrigin()`) |
 | `RadioSendFailedNotification`     | `babel-radio-api`           | notification  | `402`  | MTU exceeded, wrong-radio destination, or driver throw |
-| `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | notification  | `1201` | µBabel heartbeat attribute write — unconditional fan-out, no `destProto` filter. No LoRa analogue. |
+| `ZigBeeHeartbeatNotification`     | `babel-zigbee-protocol`     | notification  | `1201` | µBabel heartbeat attribute write — unconditional fan-out, no `destProto` filter. No LoRa analogue. **Dormant:** the current µBabel firmware has no heartbeat sender; the path stays wired. |
 | `ZigBeeAddress`                   | `babel-zigbee-protocol`     | —             | —      | IEEE EUI-64 ZigBee address; `RadioAddress` subclass (carries no event id) |
 
 Routing from generic application code is one call:
 `addr.owningProtocolId()` returns `1200` for any `ZigBeeAddress`.
 
-`MAX_USER_PAYLOAD_BYTES = 114` (= 116 B driver payload limit − 2 B
-`destProto` envelope). Requests with a larger payload trigger
-`RadioSendFailedNotification`.
+Since `0.8.0` fragmentation is transparent: a single ZigBee frame carries
+`FRAME_PAYLOAD_CAPACITY = 121` B (the driver's OCTET_STRING cap), so a message
+whose enveloped form (`destProto` + payload) fits 121 B — i.e. up to 119 B of
+user payload — is sent verbatim with zero overhead. Larger messages are split
+into up to `RadioFragmenter.MAX_FRAGMENTS = 16` fragment frames (5 B header
+each), giving `MAX_USER_PAYLOAD_BYTES = 16 × (121 − 5) − 2 = 1854` B. Requests
+with a larger payload trigger `RadioSendFailedNotification`.
 
 ### What is *not* exposed
 
@@ -133,7 +158,7 @@ Add to your `pom.xml`:
     <dependency>
         <groupId>pt.paradigmshift.babel</groupId>
         <artifactId>babel-zigbee-protocol</artifactId>
-        <version>0.7.0</version>
+        <version>0.9.0</version>
     </dependency>
 </dependencies>
 ```
@@ -172,7 +197,8 @@ babel.start();
 > `SendRadioPacketRequest` is ultimately fulfilled through the driver's
 > `ZigBeeCoordinator.transmit(IeeeAddress, ZigBeePacket)`, which requires
 > the destination to be present in `coordinator.getKnownDevices()`. If the
-> destination is unknown — or its endpoint / cluster is missing — the
+> destination is unknown — or its endpoint is missing (the µBabel cluster
+> itself is attached on demand since `babel-zigbee:0.5.0`) — the
 > protocol catches the driver's `IllegalStateException` and emits a
 > `RadioSendFailedNotification` rather than transmitting. Configuring a
 > target before the device has joined is therefore safe (subsequent sends
@@ -270,8 +296,8 @@ Push a version tag — CI deploys automatically (mirroring the other
 ParadigmShift Maven libs):
 
 ```bash
-git tag v0.7.0
-git push origin v0.7.0
+git tag v0.9.0
+git push origin v0.9.0
 ```
 
 ---

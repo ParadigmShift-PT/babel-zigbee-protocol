@@ -30,10 +30,12 @@ import java.util.Properties;
  * inside the {@code ZigBeePacket} payload and surfaces them again on inbound
  * notifications, where subscribers filter on them.
  *
- * <p>The envelope lives inside {@code ZigBeePacket.payload} only. The
- * {@code id} and {@code val} fields are not touched — end-device firmware
- * that uses them for application-level demultiplexing keeps working
- * unchanged.
+ * <p>The envelope lives inside {@code ZigBeePacket.payload} only — the
+ * driver carries those bytes verbatim. How they travel over the air is the
+ * driver's concern: since {@code babel-zigbee:0.5.0} that is a ZCL
+ * cluster-specific custom command on the µBabel vendor cluster (matching the
+ * 2026-06 µBabel firmware), but nothing in this protocol depends on the
+ * transport form.
  *
  * <h2>Wire layout inside the ZigBee payload</h2>
  * <pre>
@@ -51,14 +53,17 @@ import java.util.Properties;
  * <ul>
  *   <li>{@link ZigBeePacketReceivedNotification} — subclass of
  *   {@link pt.paradigmshift.babel.radio.notifications.RadioPacketReceivedNotification},
- *   adds the µBabel {@code id} and {@code val} fields. Generic subscribers
- *   see only the base type; ZigBee-aware subscribers cast to access the
- *   extras.</li>
+ *   adds only a typed-origin accessor ({@code getZigBeeOrigin()}). Generic
+ *   subscribers see only the base type; ZigBee-aware subscribers cast for
+ *   the typed origin.</li>
  *   <li>{@link ZigBeeHeartbeatNotification} — fires for every µBabel
  *   heartbeat attribute write from an end device. Heartbeats carry no
  *   {@code destProto} envelope (they're a periodic liveness signal, not
  *   application traffic), so the notification fans out unconditionally.
- *   This notification is ZigBee-specific and has no shared counterpart.</li>
+ *   This notification is ZigBee-specific and has no shared counterpart.
+ *   <b>Dormant at present:</b> the current µBabel firmware has no heartbeat
+ *   sender ({@code zb_send_heartbeat} was removed), so this notification
+ *   never fires until the firmware regains one — the path stays wired.</li>
  * </ul>
  *
  * <h2>What is <em>not</em> exposed</h2>
