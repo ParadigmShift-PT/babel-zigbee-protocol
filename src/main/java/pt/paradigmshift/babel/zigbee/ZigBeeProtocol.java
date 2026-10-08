@@ -104,7 +104,7 @@ public class ZigBeeProtocol extends GenericProtocol {
     /**
      * Radio-payload capacity of a single ZigBee frame, in bytes: the ZCL
      * OCTET_STRING value cap the coordinator accepts
-     * ({@link ZigBeeCoordinator#MAX_PACKET_SIZE_BYTES}, 121 B). A message whose
+     * ({@link ZigBeeCoordinator#MAX_PACKET_SIZE_BYTES}, 240 B). A message whose
      * enveloped form ([destProto][payload]) exceeds this is transparently
      * fragmented; one that fits is sent verbatim.
      */
@@ -116,7 +116,7 @@ public class ZigBeeProtocol extends GenericProtocol {
      * transparent fragmentation this is the fragmented ceiling (up to
      * {@link RadioFragmenter#MAX_FRAGMENTS} frames), not a single-frame limit;
      * a single frame still carries up to {@code FRAME_PAYLOAD_CAPACITY - 2}
-     * (119 B) with zero overhead.
+     * (238 B) with zero overhead.
      */
     public static final int MAX_USER_PAYLOAD_BYTES =
             RadioFragmenter.MAX_FRAGMENTS
